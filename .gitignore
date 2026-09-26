@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+*.log
+*.lnk
+*.tmp
+apps.backup.*.json
+sunshine_state.json
+credentials/
