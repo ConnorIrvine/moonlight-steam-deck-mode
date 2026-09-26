@@ -10,7 +10,7 @@ The project uses Sunshine's normal application preparation and cleanup commands.
 2. Run the executable on the Windows PC. It checks the main display, Steam, and Sunshine, then asks before installing. Approve the Windows administrator prompt so it can update Sunshine's app list.
 3. Refresh Moonlight's app list and select **Moonlight Deck Mode**. When finished, use Moonlight's **Quit App** command. A normal disconnect leaves the session available to reconnect.
 
-The installer copies itself and the tile art to `%ProgramData%\MoonlightDeckMode`, backs up Sunshine's `apps.json` there, and adds or updates only its own app entry. It restarts the Sunshine service if that service is running. If Sunshine runs another way, restart it manually. Steam, Sunshine, and their existing apps are not replaced.
+The installer copies itself and the tile art to `%ProgramData%\MoonlightDeckMode`, backs up Sunshine's `apps.json` there, and adds or updates only its own app entry. It restarts the Sunshine service if that service is running and waits for the web UI to become reachable. If Sunshine runs another way, restart it manually. Steam, Sunshine, and their existing apps are not replaced.
 
 The executable is unsigned; Windows may show a SmartScreen warning. You can inspect the source and build it yourself with `build.ps1`.
 

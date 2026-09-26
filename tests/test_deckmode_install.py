@@ -37,6 +37,11 @@ class InstallerTests(unittest.TestCase):
                 self.assertEqual(json.loads(backups[0].read_text()), original)
                 self.assertTrue((program / deckmode.EXECUTABLE_NAME).is_file())
                 reload_service.assert_called_once()
+                # Re-running the installer must retry the reload after a
+                # previous restart failed, even if the JSON entry is current.
+                deckmode.install(apps)
+                self.assertEqual(reload_service.call_count, 2)
+                self.assertEqual(len(list(program.glob("apps.backup.*.json"))), 1)
 
 
 if __name__ == "__main__":

@@ -12,7 +12,9 @@ import base64
 import ctypes
 import json
 import os
+import re
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -28,7 +30,7 @@ PROGRAM_DIR = Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData")) / "Moonligh
 STATE_DIR = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local"))) / "MoonlightDeckMode"
 EXECUTABLE_NAME = "MoonlightDeckMode.exe"
 ART_NAME = "SteamDeckMoonlight.png"
-VERSION = "1.0.0-beta.1"
+VERSION = "1.0.0-beta.2"
 QDC_ALL_PATHS = 1
 SDC_USE_SUPPLIED_DISPLAY_CONFIG = 0x20
 SDC_VALIDATE = 0x40
@@ -257,23 +259,105 @@ def write_atomic(path: Path, content: bytes) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def reload_sunshine() -> None:
-    # Sunshine's service name is stable on normal Windows service installs.
-    query = subprocess.run(["sc.exe", "query", "SunshineService"], capture_output=True, text=True, timeout=10)
-    if query.returncode or "RUNNING" not in query.stdout:
-        print("Restart Sunshine manually to load the new app entry.")
+def service_state() -> str | None:
+    query = subprocess.run(["sc.exe", "query", "SunshineService"],
+                           capture_output=True, text=True, timeout=10)
+    if query.returncode:
+        return None
+    match = re.search(r"STATE\s*:\s*\d+\s+([A-Z_]+)", query.stdout)
+    if not match:
+        raise DeckModeError("Could not read Sunshine's service state.")
+    return match.group(1)
+
+
+def wait_for_service(expected: str, timeout: float = 90) -> None:
+    deadline = time.monotonic() + timeout
+    while True:
+        state = service_state()
+        if state == expected:
+            return
+        if state is None:
+            raise DeckModeError("Sunshine service disappeared during restart.")
+        if time.monotonic() >= deadline:
+            raise DeckModeError(f"Sunshine remained {state} while waiting for {expected}.")
+        time.sleep(1)
+
+
+def sunshine_web_endpoint(apps_file: Path) -> tuple[str, int]:
+    host, port = "127.0.0.1", 47990
+    config = apps_file.with_name("sunshine.conf")
+    if config.is_file():
+        for line in config.read_text(encoding="utf-8-sig", errors="replace").splitlines():
+            key, separator, value = line.partition("=")
+            if not separator:
+                continue
+            value = value.split("#", 1)[0].strip().strip('"')
+            if key.strip() == "port":
+                port = int(value) + 1
+            elif key.strip() == "bind_address" and value:
+                host = {"0.0.0.0": "127.0.0.1", "::": "::1"}.get(value, value)
+    return host, port
+
+
+def wait_for_web(apps_file: Path, timeout: float = 90) -> None:
+    host, port = sunshine_web_endpoint(apps_file)
+    deadline = time.monotonic() + timeout
+    while True:
+        if service_state() != "RUNNING":
+            raise DeckModeError("Sunshine stopped during startup.")
+        try:
+            with socket.create_connection((host, port), timeout=1):
+                return
+        except OSError:
+            if time.monotonic() >= deadline:
+                raise DeckModeError(
+                    f"Sunshine service is running but its web UI is not listening at {host}:{port}."
+                )
+            time.sleep(1)
+
+
+def ensure_service_running() -> None:
+    for attempt in range(3):
+        state = service_state()
+        if state == "STOP_PENDING":
+            wait_for_service("STOPPED", timeout=90)
+            state = "STOPPED"
+        if state == "STOPPED":
+            start = subprocess.run(["sc.exe", "start", "SunshineService"],
+                                   capture_output=True, text=True, timeout=20)
+            if start.returncode and service_state() not in ("START_PENDING", "RUNNING"):
+                if attempt == 2:
+                    raise DeckModeError(
+                        f"Could not start Sunshine: {start.stdout.strip()} {start.stderr.strip()}"
+                    )
+                time.sleep(2)
+                continue
+        wait_for_service("RUNNING")
         return
-    subprocess.run(["sc.exe", "stop", "SunshineService"], check=True, timeout=20,
-                   capture_output=True)
-    for _ in range(30):
-        status = subprocess.run(["sc.exe", "query", "SunshineService"], capture_output=True,
-                                text=True, timeout=10)
-        if "STOPPED" in status.stdout:
-            break
-        time.sleep(0.5)
-    subprocess.run(["sc.exe", "start", "SunshineService"], check=True, timeout=20,
-                   capture_output=True)
-    print("Sunshine service restarted. Refresh the app list in Moonlight.")
+    raise DeckModeError("Sunshine did not start after three attempts.")
+
+
+def reload_sunshine(apps_file: Path) -> None:
+    initial = service_state()
+    if initial is None:
+        print("No Sunshine service found. Restart Sunshine manually to load the app entry.")
+        return
+    if initial == "RUNNING":
+        try:
+            stop = subprocess.run(["sc.exe", "stop", "SunshineService"],
+                                  capture_output=True, text=True, timeout=20)
+            if stop.returncode and service_state() == "RUNNING":
+                raise DeckModeError(
+                    f"Could not stop Sunshine: {stop.stdout.strip()} {stop.stderr.strip()}"
+                )
+            wait_for_service("STOPPED", timeout=120)
+        finally:
+            # A failed stop must not leave Sunshine offline if it reaches STOPPED later.
+            ensure_service_running()
+    else:
+        ensure_service_running()
+    wait_for_web(apps_file)
+    print("Sunshine is running and its web UI is ready. Refresh Moonlight's app list.")
 
 
 def install(apps_file: Path | None) -> None:
@@ -298,7 +382,8 @@ def install(apps_file: Path | None) -> None:
         raise DeckModeError("The installer is missing its Moonlight cover image.")
     write_atomic(PROGRAM_DIR / ART_NAME, art.read_bytes())
     if action == "unchanged":
-        print("Sunshine app is already current.")
+        print("Sunshine app is already current; checking that Sunshine reloads it.")
+        reload_sunshine(apps)
         return
     backup = PROGRAM_DIR / f"apps.backup.{datetime.now():%Y%m%d-%H%M%S}.{uuid.uuid4().hex[:6]}.json"
     backup.write_bytes(original)
@@ -310,10 +395,12 @@ def install(apps_file: Path | None) -> None:
         raise DeckModeError(f"Could not update {apps}; original is preserved at {backup}.")
     print(f"Sunshine app {action}. Backup: {backup}")
     try:
-        reload_sunshine()
-    except (OSError, subprocess.SubprocessError) as exc:
-        print(f"App was saved, but Sunshine could not be restarted: {exc}")
-        print("Restart Sunshine manually to load the new app entry.")
+        reload_sunshine(apps)
+    except (DeckModeError, OSError, subprocess.SubprocessError) as exc:
+        raise DeckModeError(
+            f"App was saved, but Sunshine did not restart cleanly: {exc}. "
+            "Start Sunshine manually if it is stopped."
+        ) from exc
 
 
 def encode_config(paths: list, modes: list) -> dict:
