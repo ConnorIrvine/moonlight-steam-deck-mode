@@ -6,3 +6,7 @@ __pycache__/
 apps.backup.*.json
 sunshine_state.json
 credentials/
+.venv/
+build/
+dist/
+*.spec
