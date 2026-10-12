@@ -43,7 +43,7 @@ flowchart LR
 
 The session saves its starting state in `%LocalAppData%\MoonlightDeckMode\session.json`. If only one display path was active at the start, it changes only the resolution and restores that resolution on exit. If several distinct paths were active, it temporarily keeps the current main path and restores the saved set on exit. Already being in a one-screen layout is safe. A repeated start for an already active session is harmless; a missing saved state makes stop leave the display alone.
 
-If a monitor is unplugged or the main display changes during a session, automatic restoration can fail. The state file remains so `--session-stop` can be retried after reconnecting the monitor. Windows Display Settings can also restore the layout manually.
+If a monitor is unplugged or the main display changes during a session, automatic restoration can fail. The state file remains so `--session-stop` can be retried after reconnecting the monitor. Windows Display Settings can also restore the layout manually. If a later start finds a leftover state file from a session that never stopped (for example, a disconnect followed by a reboot), it discards that file and detects the current monitor setup and resolution afresh.
 
 ## Commands
 
