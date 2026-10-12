@@ -30,7 +30,7 @@ PROGRAM_DIR = Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData")) / "Moonligh
 STATE_DIR = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local"))) / "MoonlightDeckMode"
 EXECUTABLE_NAME = "MoonlightDeckMode.exe"
 ART_NAME = "SteamDeckMoonlight.png"
-VERSION = "1.0.0-beta.2"
+VERSION = "1.0.0-beta.3"
 QDC_ALL_PATHS = 1
 SDC_USE_SUPPLIED_DISPLAY_CONFIG = 0x20
 SDC_VALIDATE = 0x40
@@ -451,15 +451,21 @@ def start_session() -> None:
     api = win.windows_api()
     state_file = STATE_DIR / "session.json"
     if state_file.exists():
-        prior = json.loads(state_file.read_text(encoding="utf-8"))
+        try:
+            prior = json.loads(state_file.read_text(encoding="utf-8"))
+        except ValueError:
+            prior = None
         primary, active, current = current_display(api)
-        if (prior.get("version") == STATE_VERSION
+        if (isinstance(prior, dict)
+                and prior.get("version") == STATE_VERSION
                 and primary.DeviceName == prior.get("primary")
                 and len(query_config(api)[0]) == 1
                 and [current.dmPelsWidth, current.dmPelsHeight] == prior.get("target")):
             print("Deck session is already active.")
             return
-        raise DeckModeError(f"A prior session state exists at {state_file}. Run --session-stop first.")
+        # A session whose stop never ran (e.g. disconnect then reboot); detect afresh.
+        print("Discarding state from an earlier session that never stopped.")
+        state_file.unlink()
     primary, active, current = current_display(api)
     selected, mode = choose_display_mode(api, primary.DeviceName, current)
     paths, modes = query_config(api)
